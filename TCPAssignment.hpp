@@ -62,12 +62,13 @@ namespace E
         STATE state = CLOSED;
         unsigned int backlog;
         uint32_t seq_num = 0;
+        uint32_t ack_num = 0;
         Waiting_State waiting_state;
         bool waiting = false;
         std::list<struct Global_Context> pending_list;
         std::list<struct Global_Context> established_list;
         uint16_t window = 0;
-        uint16_t sent_bytes = 0;
+        int sent_bytes = 0;
         std::list <Packet*> waiting_queue;
 	};
 
@@ -88,8 +89,8 @@ private:
 	void syscall_bind(UUID syscallUUID, int pid, int socketfd, struct sockaddr *myaddr, socklen_t addrlen);
 	void syscall_getsockname(UUID syscallUUID, int pid, int socketfd, struct sockaddr *myaddr, socklen_t *addrlen);
     void syscall_getpeername(UUID syscallUUID, int pid, int socketfd, struct sockaddr *addr, socklen_t *addrlen);
-    void syscall_read(UUID syscallUUID, int pid, int socketfd, void *buf, int count);
-    void syscall_write(UUID syscallUUID, int pid, int socketfd, void *buf, int count);
+    void syscall_read(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count);
+    void syscall_write(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count);
     /* help functions */
     std::list<struct Global_Context>::iterator find_pid_fd(int pid, int socketfd);
     std::list<struct Global_Context>::iterator find_pid_fd_bound(int pid, int socketfd);
@@ -102,7 +103,7 @@ private:
     bool error_if_state_diff(UUID syscallUUID, std::list<struct Global_Context>::iterator it, E::STATE state);
     int get_random_port();
     void free_local_port(int port);
-    Packet* write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_num, in_port_t src_port, in_port_t dest_port, in_addr_t src_addr, in_addr_t dest_addr, uint16_t window_size=51200, uint32_t payload_size=0, uint8_t* payload=NULL);
+    Packet* write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_num, in_port_t src_port, in_port_t dest_port, in_addr_t src_addr, in_addr_t dest_addr, uint16_t window=51200, uint32_t payload_size=0, uint8_t* payload=NULL);
 
 public:
 	TCPAssignment(Host* host);
