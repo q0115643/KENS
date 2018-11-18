@@ -530,6 +530,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 #ifdef DEBUG
 				printf("CLOSE_WAIT으로 상태를 바꿈\n");
 #endif
+				while(!it->waiting_reads.empty()){
+					struct Read_State read_state = it->waiting_reads.front();
+					it->waiting_reads.pop_front();
+					returnSystemCall(read_state.wakeup_ID, -1);
+				}
   			it->state = E::CLOSE_WAIT;
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
@@ -562,7 +567,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				else
 				{	// 상대방의 write으로 보내진 data
-					//uint8_t* rcv_buffer;, payload_size
 					for(int i=0; i<(int)payload_size; i++)
 					{
 						it->read_buffer.push_back(rcv_buffer[i]);
