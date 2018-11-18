@@ -568,22 +568,22 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						it->read_buffer.push_back(rcv_buffer[i]);
 					}
 					free(rcv_buffer);
-					if(!it->waiting_reads.empty())
+					struct Read_State* read_state;
+					uint8_t c;
+					int read_cnt;
+					while(!it->waiting_reads.empty())
 					{
-						std::list<struct Read_State>::iterator it_r;
-						for(it_r=it->waiting_reads.begin(); it_r!=it->waiting_reads.end() && !it->read_buffer.empty(); it_r++)
+						read_state = &it->waiting_reads.front();
+						read_cnt = 0;
+						while(!it->read_buffer.empty() && read_cnt<(int)read_state->count)
 						{
-							int read_cnt = 0;
-							while(!it->read_buffer.empty() && read_cnt<(int)it_r->count)
-							{
-								uint8_t c = it->read_buffer.front();
-								memcpy(static_cast<unsigned char*>(it_r->buffer)+read_cnt, &c, 1); // 여기서 에러
-								it->read_buffer.pop_front();
-								read_cnt++;
-							}
-							returnSystemCall(it_r->wakeup_ID, read_cnt);
-							it->waiting_reads.erase(it_r);
+							c = it->read_buffer.front();
+							memcpy(static_cast<unsigned char*>(read_state->buffer)+read_cnt, &c, 1); // 여기서 에러
+							it->read_buffer.pop_front();
+							read_cnt++;
 						}
+						returnSystemCall(read_state->wakeup_ID, read_cnt);
+						it->waiting_reads.pop_front();
 					}
 					uint8_t ack_flag = ACK_FLAG;
 					it->ack_num = rcv_seq_num + payload_size;
