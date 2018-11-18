@@ -50,6 +50,12 @@ namespace E
         int pid;
         int socketfd;
     };
+    struct Read_State
+    {
+        UUID wakeup_ID;
+        void* buffer;
+        uint32_t count;
+    };
 	struct Global_Context
 	{
 		int pid;
@@ -69,14 +75,16 @@ namespace E
         std::list<struct Global_Context> established_list;
         uint16_t window = 0;
         int sent_bytes = 0;
-        std::list <Packet*> waiting_queue;
+        std::list<Packet*> waiting_writes;
+        std::list<struct Read_State> waiting_reads;
+        std::list<uint8_t> read_buffer;
 	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
-	std::list <struct Global_Context> context_list;
-    std::list <int> bound_local_ports;
+	std::list<struct Global_Context> context_list;
+    std::list<int> bound_local_ports;
 
 private:
 	virtual void timerCallback(void* payload) final;
@@ -89,7 +97,7 @@ private:
 	void syscall_bind(UUID syscallUUID, int pid, int socketfd, struct sockaddr *myaddr, socklen_t addrlen);
 	void syscall_getsockname(UUID syscallUUID, int pid, int socketfd, struct sockaddr *myaddr, socklen_t *addrlen);
     void syscall_getpeername(UUID syscallUUID, int pid, int socketfd, struct sockaddr *addr, socklen_t *addrlen);
-    void syscall_read(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count);
+    void syscall_read(UUID syscallUUID, int pid, int socketfd, void *buf, unsigned count);
     void syscall_write(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count);
     /* help functions */
     std::list<struct Global_Context>::iterator find_pid_fd(int pid, int socketfd);

@@ -150,9 +150,6 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socketfd)
 	}
 	else
 	{
-#ifdef DEBUG
-		//printf("close에서 estab, close_wait이 아닌 게 꺼짐\n");
-#endif
 		this->context_list.erase(it);
 		this->removeFileDescriptor(pid, socketfd);
 		this->returnSystemCall(syscallUUID, 0);
@@ -281,7 +278,7 @@ void TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int socketfd,
  **	read & write **
  ******************/
 
-void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count)
+void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int socketfd, void *buf, unsigned count)
 {
 	// data 올 때까지 block
 	// pending read()가 있으면 data 전달하고 return
@@ -297,7 +294,25 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int socketfd, const 
 		this->returnSystemCall(syscallUUID, -1);
     return;
 	}
-
+	if(it->read_buffer.empty())
+	{
+		struct Read_State read_state;
+		read_state.wakeup_ID = syscallUUID;
+		read_state.buffer = buf;
+		read_state.count = count;
+		it->waiting_reads.push_back(read_state);
+		return; // 블락
+	}
+	// 아니면 위에서 만든 read 바로 수행
+	int read_cnt = 0;
+	while(!it->read_buffer.empty() && read_cnt < (int)count)
+	{
+		uint8_t c = it->read_buffer.front();
+		memcpy(static_cast<unsigned char*>(buf)+read_cnt, &c, 1);
+		it->read_buffer.pop_front();
+		read_cnt++;
+	}
+	returnSystemCall(syscallUUID, read_cnt);
 }
 
 void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count)
@@ -317,7 +332,7 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int socketfd, const
     return;
 	}
 	uint32_t sending_count = 0;
-	// packet들 만들어 놓고 it->waiting_queue에 넣기
+	// packet들 만들어 놓고 it->waiting_writes에 넣기
 	int rest = count;
 	uint32_t send_idx = 0;
 	while(rest)
@@ -326,21 +341,20 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int socketfd, const
 			sending_count = MSS;
 		else
 			sending_count = rest;
-		uint16_t window = DEFAULT_WINDOW_SIZE;
+		uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
 		uint8_t *partitioned_buf = (uint8_t *)calloc(MSS, 1);
 		memcpy(partitioned_buf, (uint8_t*)buf+send_idx, sending_count);
-		Packet *waiting_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, it->src_port, it->dest_port, it->src_addr, it->dest_addr, window, (uint32_t)sending_count, partitioned_buf);
-		it->waiting_queue.push_back(waiting_packet);
+		Packet *waiting_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, it->src_port, it->dest_port, it->src_addr, it->dest_addr, my_window, (uint32_t)sending_count, partitioned_buf);
+		it->waiting_writes.push_back(waiting_packet);
 		it->seq_num += sending_count;
 		rest -= sending_count;
 		send_idx += sending_count;
 	}
-	int next_size = it->waiting_queue.front()->getSize()-54;
-	while(it->sent_bytes + next_size < (int)it->window && !it->waiting_queue.empty())
+	int next_size = it->waiting_writes.front()->getSize()-54;
+	while(it->sent_bytes + next_size < (int)it->window && !it->waiting_writes.empty())
 	{
-
-		Packet *data_packet = it->waiting_queue.front();
-		it->waiting_queue.pop_front();
+		Packet *data_packet = it->waiting_writes.front();
+		it->waiting_writes.pop_front();
 		int payload_size = (int)data_packet->getSize()-54;
 		this->sendPacket("IPv4", data_packet);
 		it->sent_bytes += (int)payload_size;
@@ -366,7 +380,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	in_port_t dest_port;
 	uint16_t rcv_window;
 	uint32_t payload_size = packet->getSize()-54;
-	uint8_t* buffer;
+	uint8_t* rcv_buffer;
 	packet->readData(14+12, &dest_addr, 4);
 	packet->readData(14+16, &src_addr, 4);	// addr 바꿔서 읽기
 	// get TCP Header
@@ -378,8 +392,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+14, &rcv_window, 2);
 	if(payload_size)
 	{
-		buffer = (uint8_t *)calloc(payload_size, 1);
-		packet->readData(14+20+20, buffer, payload_size);
+		rcv_buffer = (uint8_t *)calloc(payload_size, 1);
+		packet->readData(14+20+20, rcv_buffer, payload_size);
 	}
 	this->freePacket(packet);
 	rcv_seq_num = ntohl(rcv_seq_num);
@@ -388,13 +402,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	bool SYN = bool(rcv_flags & SYN_FLAG);
 	bool ACK = bool(rcv_flags & ACK_FLAG);
 	bool FIN = bool(rcv_flags & FIN_FLAG);
-#ifdef DEBUG
-	printf("packetArrived: 도착한 패킷은 ");
-	if(SYN) printf("SYN ");
-	if(ACK) printf("ACK ");
-	if(FIN) printf("FIN ");
-	printf("\n");
-#endif
 	// dest_addr == context->rmt_addr, src_addr == context->src_addr, port도, 그런 context를 찾아 와야 함
 	std::list<struct Global_Context>::iterator it;
 	std::list<struct Global_Context>::iterator estab_it;
@@ -404,13 +411,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	{
 		it = this->find_free_pair(src_addr, src_port, dest_addr, dest_port, &found); // established list까지 뒤졌음.
 	}
-	if(!it->window) it->window = rcv_window;
 	STATE state = E::CLOSED;
-	if(found) state = it->state;
+	if(found)
+	{
+		state = it->state;
+		it->window = rcv_window;
+	}
 	else printf("\t\t\t\t\t****패킷이 왔는데 받을 소켓을 찾지 못함*****\n");
-#ifdef DEBUG
-	printf("받은 socket의 state는 ");
-#endif
 	switch(state)
 	{
 		case E::LISTEN:	// server가 받은 것, SYN 받았으면 SYN, ACK 보내고 SYN_RCVD로 바꾸기, context pending_list로 넣기
@@ -423,7 +430,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				uint8_t syn_ack_flag = SYN_FLAG | ACK_FLAG;
 				// adjust new packet and write
 				it->ack_num = rcv_seq_num+1;
-				Packet* syn_ack_packet = this->write_packet(syn_ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* syn_ack_packet = this->write_packet(syn_ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
   			// new context to put in pending_list
   			struct Global_Context new_context;
   			// pid, socketfd는 accept될 때 저장됨
@@ -499,7 +507,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
-				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
 #ifdef DEBUG
 				printf("ESTABLISHED으로 상태를 바꿈\n");
 #endif
@@ -512,14 +521,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			break;
 		case E::ESTABLISHED:
-#ifdef DEBUG
-			printf("ESTABLISHED\n");
-#endif
 			if(FIN)	// server 가 FIN 받고 ACK 보내고 CLOSE_WAIT 으로 변경
 			{
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
-				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
 #ifdef DEBUG
 				printf("CLOSE_WAIT으로 상태를 바꿈\n");
 #endif
@@ -537,17 +544,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					it->sent_bytes -= MSS;
 					if(it->sent_bytes < 0) it->sent_bytes = 0;
 					int next_size = 0;
-					if(!it->waiting_queue.empty()) next_size = it->waiting_queue.front()->getSize()-54;
-					while(it->sent_bytes + next_size < (int)it->window && !it->waiting_queue.empty())
+					if(!it->waiting_writes.empty()) next_size = it->waiting_writes.front()->getSize()-54;
+					while(it->sent_bytes + next_size < (int)it->window && !it->waiting_writes.empty())
 					{
-						Packet *data_packet = it->waiting_queue.front();
-						it->waiting_queue.pop_front();
+						Packet *data_packet = it->waiting_writes.front();
+						it->waiting_writes.pop_front();
 						int waited_payload_size = data_packet->getSize()-54;
 						this->sendPacket("IPv4", data_packet);
 						it->sent_bytes += waited_payload_size;
 						//this->freePacket(data_packet);
 					}
-					if(it->waiting_queue.empty() && it->sent_bytes==0)
+					if(it->waiting_writes.empty() && it->sent_bytes==0)
 					{
 						returnSystemCall(it->waiting_state.wakeup_ID, it->waiting_state.count);
 						return;
@@ -555,7 +562,34 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				else
 				{	// 상대방의 write으로 보내진 data
-					
+					//uint8_t* rcv_buffer;, payload_size
+					for(int i=0; i<(int)payload_size; i++)
+					{
+						it->read_buffer.push_back(rcv_buffer[i]);
+					}
+					free(rcv_buffer);
+					if(!it->waiting_reads.empty())
+					{
+						std::list<struct Read_State>::iterator it_r;
+						for(it_r=it->waiting_reads.begin(); it_r!=it->waiting_reads.end() && !it->read_buffer.empty(); it_r++)
+						{
+							int read_cnt = 0;
+							while(!it->read_buffer.empty() && read_cnt<(int)it_r->count)
+							{
+								uint8_t c = it->read_buffer.front();
+								memcpy(static_cast<unsigned char*>(it_r->buffer)+read_cnt, &c, 1); // 여기서 에러
+								it->read_buffer.pop_front();
+								read_cnt++;
+							}
+							returnSystemCall(it_r->wakeup_ID, read_cnt);
+							it->waiting_reads.erase(it_r);
+						}
+					}
+					uint8_t ack_flag = ACK_FLAG;
+					it->ack_num = rcv_seq_num + payload_size;
+					uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+					Packet *ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, it->src_port, it->dest_port, it->src_addr, it->dest_addr, my_window);
+					this->sendPacket("IPv4", ack_packet);
 				}
 			}
 			break;
@@ -582,7 +616,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			{
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
-				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -604,7 +639,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 					timer_state->pid = it->pid;
 					timer_state->socketfd = it->socketfd;
-					this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
 					this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 				}
 			}
@@ -623,7 +657,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					this->returnSystemCall(it->waiting_state.wakeup_ID, -1);
 					break;
 				}
-				this->removeFileDescriptor(it->pid, it->socketfd);
+				while(!it->waiting_reads.empty()){
+					struct Read_State read_state = it->waiting_reads.front();
+					it->waiting_reads.pop_front();
+					returnSystemCall(read_state.wakeup_ID, -1);
+				}
 				UUID syscallUUID = it->waiting_state.wakeup_ID;
 				this->context_list.erase(it);
 				this->returnSystemCall(syscallUUID, 0);
@@ -637,7 +675,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			{
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
-				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -650,7 +689,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
-				this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
 				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 			}
 			break;
@@ -676,7 +714,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
-				this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
 				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 			}
 			break;
@@ -690,7 +727,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				// 여기서는 fin이 또 오는거니까 ack이 안 갔다고 가정하고 다시 보냄
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
-				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr);
+				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -716,6 +754,11 @@ void TCPAssignment::timerCallback(void* payload)
 #ifdef DEBUG
 		printf("TIMED_WAIT\n");
 #endif
+		while(!it->waiting_reads.empty()){
+			struct Read_State read_state = it->waiting_reads.front();
+			it->waiting_reads.pop_front();
+			returnSystemCall(read_state.wakeup_ID, -1);
+		}
 		free((struct Timer_State*)payload);
 	 	UUID syscallUUID = it->waiting_state.wakeup_ID;
 		this->context_list.erase(it);
@@ -860,15 +903,14 @@ Packet* TCPAssignment::write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_
 	memcpy(temp+10, &tcp_length, 2);
 	//pseudo header
 	packet->readData(14+20, temp+12, payload_size+20);
-	//load tcp packet
 	uint32_t sum = 0;
 	uint16_t *pt = (uint16_t *)temp;
 	for(unsigned int i=0; i<payload_size+32; i+=2){
 		sum += *pt++;
 		sum = (sum >> 16) + (sum & 0xffff);
 	}
-	uint16_t checksum = (uint16_t)(~sum); //1's complement
-	packet->writeData(14+20+16, &checksum, 2); //reset checksum
+	uint16_t checksum = (uint16_t)(~sum);
+	packet->writeData(14+20+16, &checksum, 2);
 	return packet;
 }
 
