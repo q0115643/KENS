@@ -18,6 +18,8 @@
 
 
 #include <E/E_TimerModule.hpp>
+#include <E/E_TimeUtil.hpp>
+
 
 #define LOCALPORT_MIN 32768
 #define LOCALPORT_MAX 61000
@@ -26,7 +28,7 @@
 #define FIN_FLAG 0x01
 #define DEFAULT_WINDOW_SIZE 51200
 #define DEFAULT_HDL_RESERVED 5 << 4
-#define MSL 60000000000   // 60second
+#define MSL 60  // 60second
 #define MSS 512 // maximum segment size
 #define PROTO_TCP 6
 
@@ -74,8 +76,6 @@ class TCPAssignment : public HostModule, public NetworkModule, public SystemCall
 private:
 	std::list <struct Global_Context> context_list;
     std::list <int> bound_local_ports;
-    uint32_t rand_seq_num = 0;
-    uint32_t transfer_base = 1;
 
 private:
 	virtual void timerCallback(void* payload) final;

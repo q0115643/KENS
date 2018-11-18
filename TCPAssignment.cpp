@@ -14,7 +14,7 @@
 #include <E/Networking/E_NetworkUtil.hpp>
 #include "TCPAssignment.hpp"
 
-#define DEBUG
+//#define DEBUG
 
 namespace E
 {
@@ -103,6 +103,7 @@ void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int type, int prot
 	context.pid = pid;
 	context.socketfd = socketfd;
 	context.bound = false;
+	context.seq_num = 0;
 	this->context_list.push_back(context);
 	/*
 	 * Unblocks a blocked system call with return value.
@@ -125,6 +126,7 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socketfd)
 	// 나머지는 바로 종료
 	Packet *fin_packet;
 	uint8_t fin_flag;
+	uint32_t seq_num;
 	// state 기준으로 나누면 안됨. server한테 close가 먼저 불리고 fin이 올 수가 있음
 	// 그럼 그 server는 ESTAB 상태에서 fin보다 close를 먼저 받고 client마냥 작동해버림.
 	// global context에 bool 하나 넣어 보자. (적어도 ESTAB까지는 가니까 그리로 바꿀 때 true로 만들기)
@@ -132,7 +134,8 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socketfd)
 	if(it->state == E::ESTABLISHED || it->state == E::CLOSE_WAIT)
 	{
 		fin_flag = FIN_FLAG;
-		fin_packet = this->write_packet(fin_flag, this->rand_seq_num, 0, it->src_port, it->dest_port, it->src_addr, it->dest_addr);
+		seq_num = it->seq_num++;
+		fin_packet = this->write_packet(fin_flag, seq_num, 0, it->src_port, it->dest_port, it->src_addr, it->dest_addr);
   	if(it->state == E::ESTABLISHED)
   	{
 #ifdef DEBUG
@@ -147,7 +150,6 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socketfd)
 #endif
   		it->state = E::LAST_ACK;
   	}
-		it->seq_num = this->rand_seq_num++;
 		it->waiting_state.wakeup_ID = syscallUUID;
 #ifdef DEBUG
 		printf("FIN 패킷을 보냄\n");
@@ -173,7 +175,6 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 	std::list<struct Global_Context>::iterator it;
 	it = this->find_pid_fd(pid, socketfd);
 	if(this->error_if_none(syscallUUID, it)) return;
-	//
 	if(!it->bound)
 	{
 		// implicit binding
@@ -184,7 +185,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 		it->src_port = this->get_random_port();
 		it->bound = true;
 	}
-	uint32_t seq_num = this->rand_seq_num;
+	uint32_t seq_num = it->seq_num++;
 	uint32_t ack_num = 0;
 	uint8_t syn_flag = SYN_FLAG;
 	// send SYN, 14 byte Ether header + 20 byte Ipv4 header + 20 byte TCP header
@@ -192,7 +193,6 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 	it->dest_addr = serv_addr;
 	it->dest_port = serv_port;
 	it->state = E::SYN_SENT;
-	it->seq_num = this->rand_seq_num++;
 	// remember UUID for returnSystemCall(syscallUUID, 0) in packetArrived()
 	it->waiting_state.wakeup_ID = syscallUUID;
 	// send SYN
@@ -452,6 +452,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	if(!it->window) it->window = rcv_window;
 	STATE state = E::CLOSED;
 	if(found) state = it->state;
+	else printf("\t\t\t\t\t****패킷이 왔는데 받을 소켓을 찾지 못함*****\n");
 #ifdef DEBUG
 	printf("받은 socket의 state는 ");
 #endif
@@ -466,7 +467,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				if(it->pending_list.size() >= it->backlog) break;
 				uint8_t syn_ack_flag = SYN_FLAG | ACK_FLAG;
 				// adjust new packet and write
-				Packet* syn_ack_packet = this->write_packet(syn_ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* syn_ack_packet = this->write_packet(syn_ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
   			// new context to put in pending_list
   			struct Global_Context new_context;
   			// pid, socketfd는 accept될 때 저장됨
@@ -475,8 +476,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			new_context.bound = true;
   			new_context.dest_addr = dest_addr;
   			new_context.dest_port = dest_port;
-  			new_context.seq_num = this->rand_seq_num++;
-  			this->transfer_base = this->rand_seq_num;
+  			new_context.seq_num = ++it->seq_num;
   			it->pending_list.push_back(new_context);
   			// send packet
 #ifdef DEBUG
@@ -490,7 +490,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				std::list<struct Global_Context>::iterator it2;
 				for (it2 = it->pending_list.begin(); it2 != it->pending_list.end(); it2++)
 				{
-					if (it2->seq_num == rcv_ack_num-1) break;	// 전달받은 ack_num의 -1한 값이 해당 seq_num 이어야 함
+					if (it2->seq_num == rcv_ack_num) break;	// 전달받은 ack_num의 -1한 값이 해당 seq_num 이어야 함
 				}
 				if(it2 != it->pending_list.end())
 				{
@@ -499,6 +499,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					it->pending_list.erase(it2);
 					new_context.state = E::ESTABLISHED;
 					it->established_list.push_back(new_context);
+				}
+				else
+				{
+					printf("\t\t\t\t\t****Pending List에서 소켓을 찾지 못함*****\n");
 				}
 				if(it->waiting)
 				{
@@ -527,8 +531,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 #endif
 			if(SYN && ACK)
 			{
-				// rcv_ack_num == it->seq_num+1맞는지 확인
-				if(rcv_ack_num != it->seq_num+1)
+				if(rcv_ack_num != it->seq_num)
 				{
 #ifdef DEBUG
 					printf("***********ack 숫자가 보낸 거랑 달라서 리턴해버림.\n");
@@ -537,11 +540,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					break;
 				}
 				uint8_t ack_flag = ACK_FLAG;
-				Packet* ack_packet = this->write_packet(ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
 #ifdef DEBUG
 				printf("ESTABLISHED으로 상태를 바꿈\n");
 #endif
-				this->transfer_base = this->rand_seq_num;
   			it->state = E::ESTABLISHED; // 얘는 client
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
@@ -557,7 +559,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if(FIN)	// server 가 FIN 받고 ACK 보내고 CLOSE_WAIT 으로 변경
 			{
 				uint8_t ack_flag = ACK_FLAG;
-				Packet* ack_packet = this->write_packet(ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
 #ifdef DEBUG
 				printf("CLOSE_WAIT으로 상태를 바꿈\n");
 #endif
@@ -599,7 +601,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 #endif
 			if(ACK)
 			{	
-				if(rcv_ack_num != it->seq_num+1)
+				if(rcv_ack_num != it->seq_num)
 				{
 #ifdef DEBUG
 					printf("***********ack 숫자가 보낸 거랑 달라서 리턴해버림.\n");
@@ -615,7 +617,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if(FIN)	// 1.ACK&&FIN  2.FIN 	둘다 ACK 을 보내지만, 1은 TIMED_WAIT, 2는 CLOSING
 			{
 				uint8_t ack_flag = ACK_FLAG;
-				Packet* ack_packet = this->write_packet(ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -638,7 +640,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					timer_state->pid = it->pid;
 					timer_state->socketfd = it->socketfd;
 					this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
-					this->addTimer((void *)timer_state, this->getHost()->getSystem()->getCurrentTime()+2*MSL);
+					this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 				}
 			}
 			break;
@@ -648,7 +650,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 #endif
 			if(ACK)
 			{
-				if(rcv_ack_num != it->seq_num+1)
+				if(rcv_ack_num != it->seq_num)
 				{
 #ifdef DEBUG
 					printf("***********ack 숫자가 보낸 거랑 달라서 리턴해버림.\n");
@@ -669,7 +671,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if(FIN)	// client 가 FIN 받고 ACK 보내고 TIMED_WAIT 으로 변경
 			{
 				uint8_t ack_flag = ACK_FLAG;
-				Packet* ack_packet = this->write_packet(ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -683,7 +685,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
-				this->addTimer((void *)timer_state, this->getHost()->getSystem()->getCurrentTime()+2*MSL);
+				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 			}
 			break;
 		case E::CLOSING:
@@ -692,7 +694,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 #endif
 			if(ACK)
 			{
-				if(rcv_ack_num != it->seq_num+1)
+				if(rcv_ack_num != it->seq_num)
 				{
 #ifdef DEBUG
 					printf("***********ack 숫자가 보낸 거랑 달라서 리턴해버림.\n");
@@ -709,7 +711,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				this->removeFileDescriptor(it->pid, it->socketfd);	// socket 먼저 닫음
-				this->addTimer((void *)timer_state, this->getHost()->getSystem()->getCurrentTime()+2*MSL);
+				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
 			}
 			break;
 		case E::TIMED_WAIT:
@@ -721,7 +723,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				// timer 여기서는? ㄴㄴ 어짜피 여기서 close 안 일어나고 timerCallback에서만 close됨
 				// 여기서는 fin이 또 오는거니까 ack이 안 갔다고 가정하고 다시 보냄
 				uint8_t ack_flag = ACK_FLAG;
-				Packet* ack_packet = this->write_packet(ack_flag, this->rand_seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
+				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, rcv_seq_num+1, src_port, dest_port, src_addr, dest_addr);
 #ifdef DEBUG
 				printf("ACK 패킷을 보냄\n");
 #endif
@@ -736,7 +738,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 void TCPAssignment::timerCallback(void* payload)
 {
 #ifdef DEBUG
-	printf("********timerCallback 걸림\n");
+	printf("timerCallback 걸림: ");
 #endif
 	// payload로 global context 찾아서 packet 보내는 handling
 	struct Timer_State* timer_state = (struct Timer_State*) payload;
@@ -744,6 +746,9 @@ void TCPAssignment::timerCallback(void* payload)
 	it = this->find_pid_fd(timer_state->pid, timer_state->socketfd);
 	if(it->state == E::TIMED_WAIT)
 	{
+#ifdef DEBUG
+		printf("TIMED_WAIT\n");
+#endif
 		free((struct Timer_State*)payload);
 	 	UUID syscallUUID = it->waiting_state.wakeup_ID;
 		this->context_list.erase(it);
@@ -798,6 +803,7 @@ bool TCPAssignment::error_if_none(UUID syscallUUID, std::list<struct Global_Cont
 {
 	if (it == this->context_list.end())
 	{
+		printf("\t\t\t\t\t****Context List에서 소켓을 찾지 못함*****\n");
 		this->returnSystemCall(syscallUUID, -1);
 		return true;
 	}

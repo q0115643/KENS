@@ -39,7 +39,7 @@ TCPAssignment.o: TCPAssignment.cpp ../../include/E/E_Common.hpp \
  ../../include/E/E_Log.hpp ../../include/E/Networking/E_RoutingInfo.hpp \
  ../../include/E/Networking/E_Packet.hpp \
  ../../include/E/Networking/E_NetworkUtil.hpp TCPAssignment.hpp \
- ../../include/E/E_TimerModule.hpp
+ ../../include/E/E_TimerModule.hpp ../../include/E/E_TimeUtil.hpp
 testtransfer.o: testtransfer.cpp ../../include/E/E_Common.hpp \
  ../../include/E/E_Module.hpp ../../include/E/Networking/E_Networking.hpp \
  ../../include/E/E_System.hpp ../../include/E/E_Log.hpp \
