@@ -98,6 +98,7 @@ namespace E
         uint32_t acked_seq = -1;
         Packet* sent_fin_pk = NULL;
         Packet* sent_syn_pk = NULL;
+        Packet* sent_ack_pk = NULL;
 	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule

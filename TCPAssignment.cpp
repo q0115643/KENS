@@ -416,6 +416,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		case E::LISTEN:	// server가 받은 것, SYN 받았으면 SYN, ACK 보내고 SYN_RCVD로 바꾸기, context pending_list로 넣기
 			if(SYN)
 			{
+				// pending list에 이미 있는지 확인함
+				std::list<struct Global_Context>::iterator it2;
+				for (it2 = it->pending_list.begin(); it2 != it->pending_list.end(); it2++)
+				{
+					if (it2->ack_num == rcv_seq_num+1) break;
+				}
+				if(it2 != it->pending_list.end())
+				{
+					this->sendPacket("IPv4", this->clonePacket(it2->sent_ack_pk));
+					return;
+				}
 				if(it->pending_list.size() >= it->backlog) break;
 				uint8_t syn_ack_flag = SYN_FLAG | ACK_FLAG;
 				// adjust new packet and write
@@ -435,6 +446,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			new_context.window = it->window;
   			// send packet
   			new_context.sent_syn_pk = syn_ack_packet;
+  			new_context.sent_ack_pk = syn_ack_packet;
 				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
@@ -514,11 +526,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
 				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
   			it->state = E::ESTABLISHED; // 얘는 client
-  			this->sendPacket("IPv4", ack_packet);
+  			it->sent_ack_pk = ack_packet;
+  			this->sendPacket("IPv4", this->clonePacket(ack_packet));
 				this->returnSystemCall(it->waiting_state.wakeup_ID, 0);
 			}
 			break;
 		case E::ESTABLISHED:
+			if(SYN && ACK)
+			{
+				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
+				return;
+			}
 			if(FIN)	// server 가 FIN 받고 ACK 보내고 CLOSE_WAIT 으로 변경
 			{
 				uint8_t ack_flag = ACK_FLAG;
@@ -531,7 +549,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					returnSystemCall(read_state.wakeup_ID, -1);
 				}
   			it->state = E::CLOSE_WAIT;
-  			this->sendPacket("IPv4", ack_packet);
+  			it->sent_ack_pk = ack_packet;
+  			this->sendPacket("IPv4", this->clonePacket(ack_packet));
 			}
 			if(ACK)
 			{
@@ -589,6 +608,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 			}
 			break;
+		case E::CLOSE_WAIT:
+			if(FIN)
+			{	// ESTAB에서 fin받고 보낸 ack이 안감.
+  			this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
+			}
+			break;
 		case E::FIN_WAIT_1:
 			if(ACK)
 			{	
@@ -611,7 +636,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				it->ack_num = rcv_seq_num+1;
 				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
 				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
-  			this->sendPacket("IPv4", ack_packet);
+  			it->sent_ack_pk = ack_packet;
+  			this->sendPacket("IPv4", this->clonePacket(ack_packet));
 				if(it->state == E::FIN_WAIT_1)
 				{
 					it->state = CLOSING;
@@ -624,7 +650,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					timer_state->pid = it->pid;
 					timer_state->socketfd = it->socketfd;
 					timer_state->state = TIMED_WAIT;
-					UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+					UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(2*MSL, TimeUtil::MSEC));
 					it->timer_key = timer_key;
 				}
 			}
@@ -660,16 +686,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				it->ack_num = rcv_seq_num+1;
 				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
 				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
-  			this->sendPacket("IPv4", ack_packet);
+  			it->sent_ack_pk = ack_packet;
+  			this->sendPacket("IPv4", this->clonePacket(ack_packet));
   			it->state = E::TIMED_WAIT;
   			// timer?
   			struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				timer_state->state = TIMED_WAIT;
-				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(2*MSL, TimeUtil::MSEC));
 				it->timer_key = timer_key;
-
 			}
 			break;
 		case E::CLOSING:
@@ -692,20 +718,23 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				timer_state->state = TIMED_WAIT;
-				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(2*MSL, TimeUtil::MSEC));
 				it->timer_key = timer_key;
+			}
+			if(FIN)
+			{
+				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
 			}
 			break;
 		case E::TIMED_WAIT:
-			if(FIN)	// client 가 FIN 받고 ACK 보내고 기다렸다가 CLOSE
+			if(FIN)
 			{
-				// timer 여기서는? ㄴㄴ 어짜피 여기서 close 안 일어나고 timerCallback에서만 close됨
-				// 여기서는 fin이 또 오는거니까 ack이 안 갔다고 가정하고 다시 보냄
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
 				uint16_t my_window = DEFAULT_WINDOW_SIZE - (uint16_t)it->read_buffer.size();
 				Packet* ack_packet = this->write_packet(ack_flag, it->seq_num, it->ack_num, src_port, dest_port, src_addr, dest_addr, my_window);
-  			this->sendPacket("IPv4", ack_packet);
+  			it->sent_ack_pk = ack_packet;
+  			this->sendPacket("IPv4", this->clonePacket(ack_packet));
 			}
 			break;
 		default:
