@@ -173,7 +173,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 		struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 		timer_state->pid = it->pid;
 		timer_state->socketfd = it->socketfd;
-		timer_state->state = SYN_RE;
+		timer_state->state = E::SYN_RE;
 		UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
 		it->timer_running = true;
 		it->timer_key = timer_key;
@@ -379,6 +379,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	if(rcv_checksum)
 	{
 		//printf("\t\t\t\t****도착한 체크섬 틀림****\n");
+		free(rcv_buffer);
 		return;
 	}
 	rcv_seq_num = ntohl(rcv_seq_num);
@@ -434,7 +435,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
-				timer_state->state = SYN_RE;
+				timer_state->state = E::SYN_RE;
 				timer_state->pending_context = &new_context;
 				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
 				new_context.timer_key = timer_key;
@@ -514,7 +515,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				{
 					it->timer_running = false;
 					this->cancelTimer(it->timer_key);
-					if(!it->send_buffer.empty())
+					while(!it->send_buffer.empty())
 						it->send_buffer.pop_front();
 				}
 				uint8_t ack_flag = ACK_FLAG;
