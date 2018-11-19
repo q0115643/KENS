@@ -32,6 +32,7 @@
 #define MSS 512 // maximum segment size
 #define PROTO_TCP 6
 #define DEFAULT_SYN_TIMEOUT 100
+#define DEFAULT_FIN_TIMEOUT 100
 
 
 
@@ -94,6 +95,9 @@ namespace E
         UUID timer_key;
         std::list<struct Send_Info> send_buffer;
         uint32_t max_acked = 0;
+        uint32_t acked_seq = -1;
+        Packet* sent_fin_pk = NULL;
+        Packet* sent_syn_pk = NULL;
 	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
