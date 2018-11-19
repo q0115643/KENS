@@ -54,6 +54,7 @@ namespace E
         int pid;
         int socketfd;
         STATE state; 
+        struct Global_Context* pending_context = NULL;
     };
     struct Read_State
     {
@@ -90,6 +91,7 @@ namespace E
         std::list<struct Read_State> waiting_reads;
         std::list<uint8_t> read_buffer;
         bool timer_running = false;
+        UUID timer_key;
         std::list<struct Send_Info> send_buffer;
         uint32_t max_acked = 0;
 	};

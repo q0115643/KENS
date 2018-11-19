@@ -93,21 +93,13 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 
 void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int type, int protocol)
 {
-	/* createFileDescriptor
-	 * Create a file descriptor for a certain process.
-	 * The created file descriptor is automatically bound to the domain and protocol of this module.
-	 */
 	int socketfd = this->createFileDescriptor(pid);
-	// add in socket info list
 	struct Global_Context context;
 	context.pid = pid;
 	context.socketfd = socketfd;
 	context.bound = false;
 	context.seq_num = 0;
 	this->context_list.push_back(context);
-	/*
-	 * Unblocks a blocked system call with return value.
-	 */
 	this->returnSystemCall(syscallUUID, socketfd);
 }
 
@@ -182,8 +174,9 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 		timer_state->pid = it->pid;
 		timer_state->socketfd = it->socketfd;
 		timer_state->state = SYN_RE;
-		this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+		UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
 		it->timer_running = true;
+		it->timer_key = timer_key;
 	}
 	this->sendPacket("IPv4", this->clonePacket(syn_packet));
 }
@@ -432,22 +425,21 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			new_context.seq_num = ++it->seq_num;
   			new_context.ack_num = it->ack_num;
   			new_context.window = it->window;
-  			it->pending_list.push_back(new_context);
   			// send packet
   			struct Send_Info send_info;
 				send_info.seq_num = it->seq_num-1;
 				send_info.expected_ack_num = it->seq_num;
 				send_info.packet = syn_ack_packet;
-				it->send_buffer.push_back(send_info);
-				if(!it->timer_running)
-				{
-					struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
-					timer_state->pid = it->pid;
-					timer_state->socketfd = it->socketfd;
-					timer_state->state = SYN_RE;
-					this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
-					it->timer_running = true;
-				}
+				new_context.send_buffer.push_back(send_info);
+				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
+				timer_state->pid = it->pid;
+				timer_state->socketfd = it->socketfd;
+				timer_state->state = SYN_RE;
+				timer_state->pending_context = &new_context;
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+				new_context.timer_key = timer_key;
+				new_context.timer_running = true;
+				it->pending_list.push_back(new_context);
 				this->sendPacket("IPv4", this->clonePacket(syn_ack_packet));
 			}
 			else if(ACK)
@@ -465,12 +457,28 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					new_context = *it2;
 					it->pending_list.erase(it2);
 					new_context.state = E::ESTABLISHED;
+					new_context.max_acked = rcv_ack_num;
+					if(new_context.timer_running)
+					{
+						new_context.timer_running = false;
+						this->cancelTimer(new_context.timer_key);
+						if(!new_context.send_buffer.empty())
+							new_context.send_buffer.pop_front();
+					}
 					it->established_list.push_back(new_context);
 				}
 				else
 				{
 					printf("\t\t\t\t\t****Pending List에서 소켓을 찾지 못함*****\n");
 					return;
+				}
+				it->max_acked = rcv_ack_num;
+				if(it->timer_running)
+				{
+					it->timer_running = false;
+					this->cancelTimer(it->timer_key);
+					if(!it->send_buffer.empty())
+						it->send_buffer.pop_front();
 				}
 				if(it->waiting)
 				{
@@ -491,7 +499,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						this->returnSystemCall(it->waiting_state.wakeup_ID, newfd);
 					}
 				}
-				// it->send_buffer에서 expected_ack이 rcv_ack_num인거 다 지워주고 timer 다시?, max_acked = rcv_ack_num으로
 			}
 			break;
 		case E::SYN_SENT:
@@ -501,6 +508,14 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				{
 					this->returnSystemCall(it->waiting_state.wakeup_ID, -1);
 					break;
+				}
+				it->max_acked = rcv_ack_num;
+				if(it->timer_running)
+				{
+					it->timer_running = false;
+					this->cancelTimer(it->timer_key);
+					if(!it->send_buffer.empty())
+						it->send_buffer.pop_front();
 				}
 				uint8_t ack_flag = ACK_FLAG;
 				it->ack_num = rcv_seq_num+1;
@@ -611,7 +626,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					timer_state->pid = it->pid;
 					timer_state->socketfd = it->socketfd;
 					timer_state->state = TIMED_WAIT;
-					this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+					UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+					it->timer_key = timer_key;
 				}
 			}
 			break;
@@ -647,7 +663,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				timer_state->state = TIMED_WAIT;
-				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				it->timer_key = timer_key;
+
 			}
 			break;
 		case E::CLOSING:
@@ -664,7 +682,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				timer_state->state = TIMED_WAIT;
-				this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(MSL, TimeUtil::MSEC));
+				it->timer_key = timer_key;
 			}
 			break;
 		case E::TIMED_WAIT:
@@ -706,14 +725,38 @@ void TCPAssignment::timerCallback(void* payload)
 	}
 	else if(timer_state->state == E::SYN_RE)
 	{
-		if(!it->send_buffer.empty())
+		if(!timer_state->pending_context)
 		{
-			std::list<struct Send_Info>::iterator it2;
-			for(it2 = it->send_buffer.begin(); it2!=it->send_buffer.end(); ++it2)
+			if(!it->send_buffer.empty())
 			{
-				this->sendPacket("IPv4", this->clonePacket(it2->packet));
+				std::list<struct Send_Info>::iterator it2;
+				for(it2 = it->send_buffer.begin(); it2!=it->send_buffer.end(); ++it2)
+				{
+					this->sendPacket("IPv4", this->clonePacket(it2->packet));
+				}
+				UUID timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+				it->timer_key = timer_key;
 			}
-			this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+			else
+			{
+				it->timer_running = false;
+			}
+		}
+		else
+		{
+			if(!it->send_buffer.empty())
+			{
+				std::list<struct Send_Info>::iterator it2;
+				for(it2 = timer_state->pending_context->send_buffer.begin(); it2!=timer_state->pending_context->send_buffer.end(); ++it2)
+				{
+					this->sendPacket("IPv4", this->clonePacket(it2->packet));
+				}
+				timer_state->pending_context->timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+			}
+			else
+			{
+				timer_state->pending_context->timer_running = false;
+			}
 		}
   }
 }
