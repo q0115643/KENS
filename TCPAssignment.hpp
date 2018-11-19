@@ -39,7 +39,8 @@ namespace E
 {
     enum STATE
     {
-        CLOSED, LISTEN, ESTABLISHED, SYN_SENT, CLOSE_WAIT, LAST_ACK, FIN_WAIT_1, FIN_WAIT_2, TIMED_WAIT, CLOSING
+        CLOSED, LISTEN, ESTABLISHED, SYN_SENT, CLOSE_WAIT, LAST_ACK, FIN_WAIT_1, FIN_WAIT_2, TIMED_WAIT, CLOSING,
+        SYN_RE
     };
     struct Waiting_State
     {
@@ -52,12 +53,19 @@ namespace E
     {
         int pid;
         int socketfd;
+        STATE state; 
     };
     struct Read_State
     {
         UUID wakeup_ID;
         void* buffer;
         uint32_t count;
+    };
+    struct Send_Info
+    {
+        uint32_t seq_num;
+        uint32_t expected_ack_num;
+        Packet* packet;
     };
 	struct Global_Context
 	{
@@ -81,6 +89,9 @@ namespace E
         std::list<Packet*> waiting_writes;
         std::list<struct Read_State> waiting_reads;
         std::list<uint8_t> read_buffer;
+        bool timer_running = false;
+        std::list<struct Send_Info> send_buffer;
+        uint32_t max_acked = 0;
 	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
