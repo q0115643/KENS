@@ -712,7 +712,7 @@ void TCPAssignment::timerCallback(void* payload)
 	}
 	else if(timer_state->state == E::SYN_RE)
 	{
-		if(timer_state->pending_context==NULL)	// connect
+		if(!timer_state->pending_context)
 		{
 			if(!it->send_buffer.empty())
 			{
@@ -729,7 +729,7 @@ void TCPAssignment::timerCallback(void* payload)
 				it->timer_running = false;
 			}
 		}
-		else 	// accept
+		else
 		{
 			if(!timer_state->pending_context->send_buffer.empty())
 			{

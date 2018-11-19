@@ -40,7 +40,7 @@ namespace E
     enum STATE
     {
         CLOSED, LISTEN, ESTABLISHED, SYN_SENT, CLOSE_WAIT, LAST_ACK, FIN_WAIT_1, FIN_WAIT_2, TIMED_WAIT, CLOSING,
-        SYN_RE
+        SYN_RE, FIN_RE
     };
     struct Waiting_State
     {
