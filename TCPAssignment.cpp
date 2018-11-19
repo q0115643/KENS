@@ -164,8 +164,6 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int socketfd, str
 	it->waiting_state.wakeup_ID = syscallUUID;
 	// send SYN
 	struct Send_Info send_info;
-	send_info.seq_num = seq_num;
-	send_info.expected_ack_num = seq_num+1;
 	send_info.packet = syn_packet;
 	it->send_buffer.push_back(send_info);
 	if(!it->timer_running)
@@ -379,7 +377,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	if(rcv_checksum)
 	{
 		//printf("\t\t\t\t****도착한 체크섬 틀림****\n");
-		free(rcv_buffer);
+		if(payload_size) free(rcv_buffer);
 		return;
 	}
 	rcv_seq_num = ntohl(rcv_seq_num);
@@ -428,8 +426,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			new_context.window = it->window;
   			// send packet
   			struct Send_Info send_info;
-				send_info.seq_num = it->seq_num-1;
-				send_info.expected_ack_num = it->seq_num;
 				send_info.packet = syn_ack_packet;
 				new_context.send_buffer.push_back(send_info);
 				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
@@ -458,12 +454,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					new_context = *it2;
 					it->pending_list.erase(it2);
 					new_context.state = E::ESTABLISHED;
-					new_context.max_acked = rcv_ack_num;
 					if(new_context.timer_running)
 					{
 						new_context.timer_running = false;
 						this->cancelTimer(new_context.timer_key);
-						if(!new_context.send_buffer.empty())
+						while(!new_context.send_buffer.empty())
 							new_context.send_buffer.pop_front();
 					}
 					it->established_list.push_back(new_context);
@@ -472,14 +467,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				{
 					printf("\t\t\t\t\t****Pending List에서 소켓을 찾지 못함*****\n");
 					return;
-				}
-				it->max_acked = rcv_ack_num;
-				if(it->timer_running)
-				{
-					it->timer_running = false;
-					this->cancelTimer(it->timer_key);
-					if(!it->send_buffer.empty())
-						it->send_buffer.pop_front();
 				}
 				if(it->waiting)
 				{
@@ -510,7 +497,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					this->returnSystemCall(it->waiting_state.wakeup_ID, -1);
 					break;
 				}
-				it->max_acked = rcv_ack_num;
 				if(it->timer_running)
 				{
 					it->timer_running = false;
@@ -726,7 +712,7 @@ void TCPAssignment::timerCallback(void* payload)
 	}
 	else if(timer_state->state == E::SYN_RE)
 	{
-		if(!timer_state->pending_context)
+		if(timer_state->pending_context==NULL)	// connect
 		{
 			if(!it->send_buffer.empty())
 			{
@@ -743,9 +729,9 @@ void TCPAssignment::timerCallback(void* payload)
 				it->timer_running = false;
 			}
 		}
-		else
+		else 	// accept
 		{
-			if(!it->send_buffer.empty())
+			if(!timer_state->pending_context->send_buffer.empty())
 			{
 				std::list<struct Send_Info>::iterator it2;
 				for(it2 = timer_state->pending_context->send_buffer.begin(); it2!=timer_state->pending_context->send_buffer.end(); ++it2)
