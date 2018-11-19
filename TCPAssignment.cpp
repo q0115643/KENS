@@ -280,11 +280,6 @@ void TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int socketfd,
 
 void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int socketfd, void *buf, unsigned count)
 {
-	// data 올 때까지 block
-	// pending read()가 있으면 data 전달하고 return
-	// data 받았는데 pending read() 없으면 data buffer에 넣어둠
-	// buffer 빈공간합 == my window size
-	// ACK packet에 쓰기
 	std::list<struct Global_Context>::iterator it;
 	it = this->find_pid_fd(pid, socketfd);
 	if(this->error_if_none(syscallUUID, it)) return;
@@ -317,10 +312,6 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int socketfd, void *
 
 void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int socketfd, const void *buf, unsigned count)
 {
-	// internal buffer 만들어서 ACK 안 온 것들 가지고 있어야함
-	// internal buffer가 full이면 write을 block해놔야함
-	// 	buffer에 공간 생기면 풀어주기
-	// Sum(total_unacked_bytes) 는 peer의 window size(rwnd)보다 작아야함 => 얘네는 이미 보낸 애들 말하는 거임.
 	std::list<struct Global_Context>::iterator it;
 	uint8_t ack_flag = ACK_FLAG;
 	it = this->find_pid_fd(pid, socketfd);
@@ -363,7 +354,6 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int socketfd, const
 	it->waiting_state.count = count;
 }
 
-
 /***********************************
  **	packetArrived & timerCallback **
  ***********************************/	
@@ -395,7 +385,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		rcv_buffer = (uint8_t *)calloc(payload_size, 1);
 		packet->readData(14+20+20, rcv_buffer, payload_size);
 	}
+	uint16_t rcv_checksum = get_checksum(packet, dest_addr, src_addr, payload_size);
 	this->freePacket(packet);
+	if(rcv_checksum)
+	{
+		printf("\t\t\t\t****도착한 체크섬 틀림****\n");
+		return;
+	}
 	rcv_seq_num = ntohl(rcv_seq_num);
 	rcv_ack_num = ntohl(rcv_ack_num);
 	rcv_window = ntohs(rcv_window);
@@ -898,14 +894,20 @@ Packet* TCPAssignment::write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_
 	packet->writeData(14+20+14, &pk_window, 2);
 	if(payload_size > 0)
 		packet->writeData(14+20+20, payload, payload_size);	
-	// for Checksum
+	uint16_t checksum = get_checksum(packet, src_addr, dest_addr, payload_size);
+	packet->writeData(14+20+16, &checksum, 2);
+	return packet;
+}
+
+uint16_t TCPAssignment::get_checksum(Packet* packet, in_addr_t src_addr, in_addr_t dest_addr, uint32_t payload_size)
+{
+	uint8_t protocol = PROTO_TCP;
 	uint8_t *temp = (uint8_t *)calloc(12+20+payload_size,1);
 	uint16_t tcp_length = htons(payload_size+20);
 	memcpy(temp, &src_addr, 4);
 	memcpy(temp+4, &dest_addr, 4);
 	memcpy(temp+9, &protocol, 1);
 	memcpy(temp+10, &tcp_length, 2);
-	//pseudo header
 	packet->readData(14+20, temp+12, payload_size+20);
 	uint32_t sum = 0;
 	uint16_t *pt = (uint16_t *)temp;
@@ -914,8 +916,8 @@ Packet* TCPAssignment::write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_
 		sum = (sum >> 16) + (sum & 0xffff);
 	}
 	uint16_t checksum = (uint16_t)(~sum);
-	packet->writeData(14+20+16, &checksum, 2);
-	return packet;
+	free(temp);
+	return checksum;
 }
 
 }

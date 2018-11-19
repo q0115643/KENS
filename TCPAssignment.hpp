@@ -31,6 +31,9 @@
 #define MSL 60  // 60second
 #define MSS 512 // maximum segment size
 #define PROTO_TCP 6
+#define DEFAULT_SYN_TIMEOUT 100
+
+
 
 namespace E
 {
@@ -112,7 +115,7 @@ private:
     int get_random_port();
     void free_local_port(int port);
     Packet* write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_num, in_port_t src_port, in_port_t dest_port, in_addr_t src_addr, in_addr_t dest_addr, uint16_t window=51200, uint32_t payload_size=0, uint8_t* payload=NULL);
-
+    uint16_t get_checksum(Packet* packet, in_addr_t src_addr, in_addr_t dest_addr, uint32_t payload_size);
 public:
 	TCPAssignment(Host* host);
 	virtual void initialize();
