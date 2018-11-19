@@ -55,7 +55,9 @@ namespace E
         int pid;
         int socketfd;
         STATE state; 
-        struct Global_Context* pending_context = NULL;
+        bool pending = false;
+        Packet* pending_syn = NULL;
+        UUID pending_timer_key;
     };
     struct Read_State
     {
@@ -91,14 +93,14 @@ namespace E
         std::list<Packet*> waiting_writes;
         std::list<struct Read_State> waiting_reads;
         std::list<uint8_t> read_buffer;
-        bool timer_running = false;
         UUID timer_key;
         std::list<struct Send_Info> send_buffer;
         uint32_t max_acked = 0;
         uint32_t acked_seq = -1;
-        Packet* sent_fin_pk = NULL;
+        struct Timer_State* pended_timer;
         Packet* sent_syn_pk = NULL;
         Packet* sent_ack_pk = NULL;
+        Packet* sent_fin_pk = NULL;
 	};
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule

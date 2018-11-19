@@ -401,7 +401,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		state = it->state;
 		it->window = rcv_window;
 	}
-	else printf("\t\t\t\t\t****패킷이 왔는데 받을 소켓을 찾지 못함*****\n");
+	else
+	{
+		if(it->timer_key)
+			this->cancelTimer(it->timer_key);
+		return;
+	}
 	switch(state)
 	{
 		case E::LISTEN:	// server가 받은 것, SYN 받았으면 SYN, ACK 보내고 SYN_RCVD로 바꾸기, context pending_list로 넣기
@@ -411,7 +416,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				std::list<struct Global_Context>::iterator it2;
 				for (it2 = it->pending_list.begin(); it2 != it->pending_list.end(); it2++)
 				{
-					if (it2->ack_num == rcv_seq_num+1) break;
+					if(it2->ack_num == rcv_seq_num+1 && it2->dest_addr==dest_addr && it2->dest_port==dest_port) break;
 				}
 				if(it2 != it->pending_list.end())
 				{
@@ -436,15 +441,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
   			new_context.ack_num = it->ack_num;
   			new_context.window = it->window;
   			// send packet
-  			new_context.sent_syn_pk = syn_ack_packet;
   			new_context.sent_ack_pk = syn_ack_packet;
 				struct Timer_State *timer_state = (struct Timer_State*)malloc(sizeof (struct Timer_State));
 				timer_state->pid = it->pid;
 				timer_state->socketfd = it->socketfd;
 				timer_state->state = E::SYN_RE;
-				new_context.timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+				timer_state->pending_timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+				timer_state->pending = true;
+        timer_state->pending_syn = syn_ack_packet;
+        new_context.pended_timer = timer_state;
 				it->pending_list.push_back(new_context);
-				timer_state->pending_context = &new_context;
 				this->sendPacket("IPv4", this->clonePacket(syn_ack_packet));
 			}
 			else if(ACK)
@@ -462,8 +468,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					new_context = *it2;
 					it->pending_list.erase(it2);
 					new_context.state = E::ESTABLISHED;
-					this->cancelTimer(new_context.timer_key);
-					new_context.sent_syn_pk = NULL;
+					this->cancelTimer(new_context.pended_timer->pending_timer_key);
+					new_context.pended_timer->pending_syn = NULL;
+					new_context.pended_timer->pending = false;
 					it->established_list.push_back(new_context);
 				}
 				else
@@ -596,6 +603,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			break;
 		case E::FIN_WAIT_1:
+			if(SYN && ACK)
+			{
+				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
+				return;
+			}
 			if(ACK)
 			{	
 				if(rcv_ack_num != it->seq_num)
@@ -733,7 +745,7 @@ void TCPAssignment::timerCallback(void* payload)
 	}
 	else if(timer_state->state == E::SYN_RE)
 	{
-		if(!timer_state->pending_context)
+		if(!timer_state->pending)
 		{
 			if(it->sent_syn_pk)
 			{
@@ -743,10 +755,10 @@ void TCPAssignment::timerCallback(void* payload)
 		}
 		else
 		{
-			if(timer_state->pending_context->sent_syn_pk)
+			if(timer_state->pending_syn)
 			{
-				this->sendPacket("IPv4", this->clonePacket(timer_state->pending_context->sent_syn_pk));
-				timer_state->pending_context->timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
+				this->sendPacket("IPv4", this->clonePacket(timer_state->pending_syn));
+				timer_state->pending_timer_key = this->addTimer((void *)timer_state, TimeUtil::makeTime(DEFAULT_SYN_TIMEOUT, TimeUtil::MSEC));
 			}
 		}
   }
