@@ -117,13 +117,9 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int socketfd)
 		seq_num = it->seq_num++;
 		fin_packet = this->write_packet(fin_flag, seq_num, 0, it->src_port, it->dest_port, it->src_addr, it->dest_addr);
   	if(it->state == E::ESTABLISHED)
-  	{
-				it->state = E::FIN_WAIT_1;
-  	}
+  		it->state = E::FIN_WAIT_1;
   	else 	// CLOSE_WAIT
-  	{
   		it->state = E::LAST_ACK;
-  	}
 		it->waiting_state.wakeup_ID = syscallUUID;
 		// send FIN
 		it->sent_fin_pk = fin_packet;
@@ -459,9 +455,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				std::list<struct Global_Context>::iterator it2;
 				// 하나 찾아서 그거만 하면 안되고 작은것부터 찾은것까지 전부 해야함
 				for (it2 = it->pending_list.begin(); it2 != it->pending_list.end(); it2++)
-				{
 					if (it2->seq_num == rcv_ack_num) break;
-				}
 				if(it2 != it->pending_list.end())
 				{	// established_list에 넣어줌
 					struct Global_Context new_context;
@@ -567,9 +561,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				else
 				{	// 상대방의 write으로 보내진 data
 					for(int i=0; i<(int)payload_size; i++)
-					{
 						it->read_buffer.push_back(rcv_buffer[i]);
-					}
 					free(rcv_buffer);
 					struct Read_State* read_state;
 					uint8_t c;
@@ -597,6 +589,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			break;
 		case E::CLOSE_WAIT:
+			if(SYN && ACK)
+			{
+				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
+				return;
+			}
 			if(FIN)
 			{	// ESTAB에서 fin받고 보낸 ack이 안감.
   			this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
@@ -665,6 +662,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			break;
 		case E::FIN_WAIT_2:
+			if(SYN && ACK)
+			{
+				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
+				return;
+			}
 			if(FIN)	// client 가 FIN 받고 ACK 보내고 TIMED_WAIT 으로 변경
 			{
 				uint8_t ack_flag = ACK_FLAG;
@@ -703,9 +705,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				it->timer_key = timer_key;
 			}
 			if(FIN)
-			{
 				this->sendPacket("IPv4", this->clonePacket(it->sent_ack_pk));
-			}
 			break;
 		case E::TIMED_WAIT:
 			if(FIN)
@@ -772,9 +772,10 @@ void TCPAssignment::timerCallback(void* payload)
   }
 }
 
+
 /********************
  **	help functions **
- ********************/									
+ ********************/
 
 std::list<struct Global_Context>::iterator TCPAssignment::find_pid_fd(int pid, int socketfd)
 {
@@ -874,9 +875,7 @@ void TCPAssignment::free_local_port(int port)
 {
 	std::list<int>::iterator it = std::find(this->bound_local_ports.begin(), this->bound_local_ports.end(), port);
 	if(it != this->bound_local_ports.end())
-	{
 		this->bound_local_ports.erase(it);
-	}
 }
 
 Packet* TCPAssignment::write_packet(int8_t flag, uint32_t seq_num, uint32_t ack_num, in_port_t src_port, in_port_t dest_port, in_addr_t src_addr, in_addr_t dest_addr, uint16_t window, uint32_t payload_size, uint8_t* payload)
